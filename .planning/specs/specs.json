@@ -1,0 +1,10 @@
+{
+  "todos": [
+    {
+      "id": "01",
+      "title": "Bootstrap open-spinner",
+      "path": ".planning/specs/01-bootstrap-open-spinner",
+      "completed": false
+    }
+  ]
+}
