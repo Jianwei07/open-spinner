@@ -1,13 +1,13 @@
 # State
 
 ## Current Position
-Planning checkpoint created before framework choice.
+V0.1 Go CLI implemented and verified locally.
 
 ## Branch
 `main`
 
 ## Next Action
-Choose implementation framework: Go, Rust, Python, or Node.js.
+Commit and push the verified V0.1 implementation to `main`.
 
 ## Execution Gate
-Do not execute implementation specs until the framework decision is recorded and the specs are revised for that framework.
+Bootstrap spec is complete. Future implementation work should start from a new checked spec or a small direct task.

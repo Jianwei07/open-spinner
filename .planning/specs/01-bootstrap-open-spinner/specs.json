@@ -4,31 +4,31 @@
       "id": "01",
       "title": "Record framework decision",
       "spec": ".planning/specs/01-bootstrap-open-spinner/01-record-framework-decision.md",
-      "completed": false
+      "completed": true
     },
     {
       "id": "02",
       "title": "Implement local status store",
       "spec": ".planning/specs/01-bootstrap-open-spinner/02-implement-local-status-store.md",
-      "completed": false
+      "completed": true
     },
     {
       "id": "03",
       "title": "Implement CLI commands",
       "spec": ".planning/specs/01-bootstrap-open-spinner/03-implement-cli-commands.md",
-      "completed": false
+      "completed": true
     },
     {
       "id": "04",
       "title": "Add tests",
       "spec": ".planning/specs/01-bootstrap-open-spinner/04-add-tests.md",
-      "completed": false
+      "completed": true
     },
     {
       "id": "05",
       "title": "Document V0.1 usage",
       "spec": ".planning/specs/01-bootstrap-open-spinner/05-document-v0-1-usage.md",
-      "completed": false
+      "completed": true
     }
   ]
 }

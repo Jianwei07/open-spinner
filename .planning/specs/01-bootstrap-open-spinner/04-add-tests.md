@@ -6,6 +6,7 @@ Add a small test suite that proves the core status contract works.
 ## Context
 - Tests should use temp directories and no real user cache.
 - Avoid broad fixtures or framework ceremony.
+- Tests live in `tests/open_spinner_test.go` and execute the built CLI through `go test ./...`.
 
 ## Changes
 1. Add tests for writing and listing one status.
@@ -16,7 +17,7 @@ Add a small test suite that proves the core status contract works.
 6. Add tests for invalid state handling.
 
 ## Verification
-- Run the framework-specific test command added by task `01.01`.
+- Run `go test ./...`.
 
 ## Done
 - Tests fail if state transitions, storage, or output formats break.

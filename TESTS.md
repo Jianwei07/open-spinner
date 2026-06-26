@@ -1,6 +1,10 @@
 # Tests
 
-Framework is undecided, so commands are pending.
+Run the project test suite with:
+
+```sh
+go test ./...
+```
 
 ## Required Coverage
 - Status write/read using a temp status directory.

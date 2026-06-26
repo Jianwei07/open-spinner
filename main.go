@@ -1,0 +1,368 @@
+package main
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+)
+
+const version = "0.1.0-dev"
+
+type Status struct {
+	V         int       `json:"v"`
+	ID        string    `json:"id"`
+	Agent     string    `json:"agent"`
+	State     string    `json:"state"`
+	Text      string    `json:"text,omitempty"`
+	CWD       string    `json:"cwd,omitempty"`
+	PID       int       `json:"pid,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
+	TTLMS     int64     `json:"ttl_ms"`
+}
+
+func main() {
+	if err := run(os.Args[1:], os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run(args []string, out io.Writer) error {
+	if len(args) == 0 {
+		return errors.New("usage: open-spinner <set|clear|list|print|version>")
+	}
+
+	switch args[0] {
+	case "--version", "version":
+		fmt.Fprintln(out, version)
+		return nil
+	case "set":
+		return setCmd(args[1:])
+	case "clear":
+		return clearCmd(args[1:])
+	case "list":
+		return listCmd(args[1:], out)
+	case "print":
+		return printCmd(args[1:], out)
+	default:
+		return fmt.Errorf("unknown command %q", args[0])
+	}
+}
+
+func setCmd(args []string) error {
+	if len(args) == 0 {
+		return errors.New("set requires a state")
+	}
+
+	state := args[0]
+	if !validState(state) {
+		return fmt.Errorf("invalid state %q", state)
+	}
+
+	fs := newFlagSet("set")
+	agent := fs.String("agent", "", "agent name")
+	text := fs.String("text", "", "status text")
+	id := fs.String("id", "", "status id")
+	ttl := fs.Duration("ttl", 5*time.Minute, "status ttl")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if *agent == "" {
+		return errors.New("set requires --agent")
+	}
+	if *ttl < 0 {
+		return errors.New("ttl must be non-negative")
+	}
+
+	cwd, _ := os.Getwd()
+	status := Status{
+		V:         1,
+		ID:        resolveID(*id, *agent),
+		Agent:     *agent,
+		State:     state,
+		Text:      *text,
+		CWD:       cwd,
+		PID:       os.Getpid(),
+		UpdatedAt: time.Now().UTC(),
+		TTLMS:     ttl.Milliseconds(),
+	}
+
+	return writeStatus(statusDir(), status)
+}
+
+func clearCmd(args []string) error {
+	fs := newFlagSet("clear")
+	id := fs.String("id", "", "status id")
+	agent := fs.String("agent", "", "agent name")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	dir := statusDir()
+	if *id != "" {
+		return removeStatus(dir, *id)
+	}
+	if *agent != "" {
+		statuses, err := readStatuses(dir, time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		for _, status := range statuses {
+			if status.Agent == *agent {
+				if err := removeStatus(dir, status.ID); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if id := envID(); id != "" {
+		return removeStatus(dir, id)
+	}
+	return clearAll(dir)
+}
+
+func listCmd(args []string, out io.Writer) error {
+	fs := newFlagSet("list")
+	format := fs.String("format", "json", "output format")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *format != "json" {
+		return errors.New("list supports only --format json")
+	}
+
+	statuses, err := readStatuses(statusDir(), time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	return writeJSON(out, statuses)
+}
+
+func printCmd(args []string, out io.Writer) error {
+	fs := newFlagSet("print")
+	format := fs.String("format", "plain", "output format")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	statuses, err := readStatuses(statusDir(), time.Now().UTC())
+	if err != nil {
+		return err
+	}
+
+	switch *format {
+	case "plain":
+		fmt.Fprintln(out, renderPlain(statuses))
+	case "tmux":
+		fmt.Fprintln(out, renderTmux(statuses))
+	case "json":
+		return writeJSON(out, statuses)
+	default:
+		return fmt.Errorf("unsupported print format %q", *format)
+	}
+	return nil
+}
+
+func writeStatus(dir string, status Status) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+
+	data, err := json.MarshalIndent(status, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+
+	tmp, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	target := statusPath(dir, status.ID)
+	if err := os.Rename(tmpName, target); err != nil {
+		if removeErr := os.Remove(target); removeErr != nil && !os.IsNotExist(removeErr) {
+			return err
+		}
+		return os.Rename(tmpName, target)
+	}
+	return nil
+}
+
+func readStatuses(dir string, now time.Time) ([]Status, error) {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var statuses []Status
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			continue
+		}
+
+		var status Status
+		if err := json.Unmarshal(data, &status); err != nil {
+			continue
+		}
+		if status.ID == "" || status.Agent == "" || !validState(status.State) {
+			continue
+		}
+		statuses = append(statuses, withDerivedState(status, now))
+	}
+
+	sort.Slice(statuses, func(i, j int) bool {
+		if statuses[i].Agent == statuses[j].Agent {
+			return statuses[i].ID < statuses[j].ID
+		}
+		return statuses[i].Agent < statuses[j].Agent
+	})
+	return statuses, nil
+}
+
+func removeStatus(dir, id string) error {
+	err := os.Remove(statusPath(dir, id))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+func clearAll(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func withDerivedState(status Status, now time.Time) Status {
+	if status.TTLMS > 0 && now.Sub(status.UpdatedAt) > time.Duration(status.TTLMS)*time.Millisecond {
+		status.State = "stale"
+	}
+	return status
+}
+
+func renderPlain(statuses []Status) string {
+	lines := make([]string, 0, len(statuses))
+	for _, status := range statuses {
+		line := status.Agent + " " + status.State
+		if status.Text != "" {
+			line += ": " + status.Text
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderTmux(statuses []Status) string {
+	parts := make([]string, 0, len(statuses))
+	for _, status := range statuses {
+		parts = append(parts, status.Agent+":"+status.State)
+	}
+	return strings.Join(parts, " | ")
+}
+
+func writeJSON(out io.Writer, statuses []Status) error {
+	if statuses == nil {
+		statuses = []Status{}
+	}
+	enc := json.NewEncoder(out)
+	enc.SetIndent("", "  ")
+	return enc.Encode(statuses)
+}
+
+func statusDir() string {
+	if value := os.Getenv("AGENT_STATUS_DIR"); value != "" {
+		return value
+	}
+	if value := os.Getenv("OPEN_SPINNER_DIR"); value != "" {
+		return value
+	}
+	if value := os.Getenv("XDG_RUNTIME_DIR"); value != "" {
+		return filepath.Join(value, "open-spinner")
+	}
+	if value := os.Getenv("XDG_CACHE_HOME"); value != "" {
+		return filepath.Join(value, "open-spinner")
+	}
+	if value, err := os.UserCacheDir(); err == nil && value != "" {
+		return filepath.Join(value, "open-spinner")
+	}
+	return filepath.Join(os.TempDir(), "open-spinner")
+}
+
+func statusPath(dir, id string) string {
+	return filepath.Join(dir, safeName(id)+".json")
+}
+
+func safeName(id string) string {
+	sum := sha256.Sum256([]byte(id))
+	return hex.EncodeToString(sum[:])
+}
+
+func resolveID(explicit, fallbackAgent string) string {
+	if explicit != "" {
+		return explicit
+	}
+	if id := envID(); id != "" {
+		return id
+	}
+	return fallbackAgent
+}
+
+func envID() string {
+	for _, key := range []string{"OPEN_SPINNER_ID", "AGENT_STATUS_ID", "TMUX_PANE"} {
+		if value := os.Getenv(key); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func validState(state string) bool {
+	return state == "idle" || state == "busy" || state == "attention"
+}
+
+func newFlagSet(name string) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	return fs
+}

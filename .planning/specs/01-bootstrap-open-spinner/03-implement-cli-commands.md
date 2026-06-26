@@ -6,6 +6,7 @@ Implement the V0.1 CLI surface for setting, clearing, listing, and printing agen
 ## Context
 - Depends on task `01.02` status store.
 - Keep command surface small.
+- Files: `main.go`, `tests/open_spinner_test.go`.
 
 ## Changes
 1. Implement `open-spinner set <idle|busy|attention> --agent <name> [--text <text>] [--id <id>] [--ttl <duration>]`.
@@ -15,7 +16,7 @@ Implement the V0.1 CLI surface for setting, clearing, listing, and printing agen
 5. Implement `open-spinner version` or `--version`.
 
 ## Verification
-- Run the framework-specific test command added by task `01.01`.
+- Run `go test ./...`.
 - Run manual CLI smoke checks using a temp `AGENT_STATUS_DIR`.
 
 ## Done

@@ -2,15 +2,27 @@
 
 One tiny status signal for coding agents.
 
-`open-spinner` will let agent CLIs, hooks, and plugins write a shared local status that terminals, tmux, prompts, and tab bars can render.
+`open-spinner` lets agent CLIs, hooks, and plugins write a shared local status that terminals, tmux, prompts, and tab bars can render.
 
-It will not scrape terminal output. Adapters should emit status directly.
+It does not scrape terminal output. Adapters should emit status directly.
 
 ## Status
 
-Planning checkpoint only. Framework choice is intentionally open.
+V0.1 Go CLI.
 
-See `.planning/current/HANDOFF.md` for the next-session handoff.
+## Install
+
+From this repo:
+
+```sh
+go build -o open-spinner .
+```
+
+Or run without installing:
+
+```sh
+go run . --version
+```
 
 ## Goal
 
@@ -27,7 +39,7 @@ coding agent hook/plugin/wrapper -> local status JSON -> terminal/tmux/prompt re
 | `attention` | User input, approval, auth, conflict, or error needs intervention. |
 | `stale` | Derived when a status is older than its TTL. |
 
-## Planned CLI
+## CLI
 
 ```sh
 open-spinner set busy --agent claude
@@ -39,21 +51,23 @@ open-spinner list --format json
 open-spinner clear
 ```
 
-## Planned Install Channels
+Supported commands:
 
-Start small:
+- `set <idle|busy|attention> --agent <name> [--text <text>] [--id <id>] [--ttl <duration>]`
+- `clear [--id <id>] [--agent <name>]`
+- `list --format json`
+- `print --format plain|tmux|json`
+- `version` or `--version`
 
-- GitHub Releases binaries
-- Homebrew tap
-- Scoop for Windows
+Future install channels can add GitHub release binaries, Homebrew, and Scoop after release automation exists.
 
-## Planned tmux Integration
+## tmux Integration
 
 ```tmux
 set -g status-right '#(open-spinner print --format tmux) %H:%M'
 ```
 
-## Planned Storage
+## Storage
 
 Status files are JSON and local-only.
 
@@ -65,9 +79,9 @@ Directory order:
 4. `$XDG_CACHE_HOME/open-spinner`
 5. OS user cache dir + `/open-spinner`
 
-Set `$OPEN_SPINNER_ID` or `$AGENT_STATUS_ID` to make multiple hook calls update the same session. If unset, `open-spinner` should use terminal/session env vars like `$TMUX_PANE`, then fall back to the agent name.
+Set `$OPEN_SPINNER_ID` or `$AGENT_STATUS_ID` to make multiple hook calls update the same session. If unset, `open-spinner` uses `$TMUX_PANE`, then falls back to the agent name.
 
-## Planned Status JSON
+## Status JSON
 
 ```json
 {
@@ -81,6 +95,23 @@ Set `$OPEN_SPINNER_ID` or `$AGENT_STATUS_ID` to make multiple hook calls update 
   "updated_at": "2026-06-26T12:00:00Z",
   "ttl_ms": 300000
 }
+```
+
+`stale` is derived when `updated_at + ttl_ms` is older than now. Agents write only `idle`, `busy`, or `attention`.
+
+## Test
+
+```sh
+go test ./...
+```
+
+Manual smoke:
+
+```sh
+tmp=$(mktemp -d)
+AGENT_STATUS_DIR=$tmp go run . set busy --agent opencode
+AGENT_STATUS_DIR=$tmp go run . print --format plain
+AGENT_STATUS_DIR=$tmp go run . clear
 ```
 
 ## Scope
