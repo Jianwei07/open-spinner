@@ -186,3 +186,23 @@ func TestSetBusyIsolatesConcurrentSessionsOfSameAgent(t *testing.T) {
 		t.Fatalf("session-B state = %q, want busy (must be unaffected by session-A going idle)", byID["session-B"])
 	}
 }
+
+// TestTtynameFromControllingTerminalEmptyWithoutOne covers the no-tty case
+// (e.g. this test binary itself, or a hook subprocess with no controlling
+// terminal at all): /dev/tty must fail to open there, and the function
+// must return "" rather than erroring or blocking. The has-a-tty case
+// isn't practical to assert in a test binary — resolveTTY's other
+// fallbacks (env vars, /proc/self/fd/0 on Linux) are what's exercised in
+// TestResolveIDPriorityOrder instead.
+func TestTtynameFromControllingTerminalEmptyWithoutOne(t *testing.T) {
+	if _, err := os.Stat("/dev/tty"); err != nil {
+		t.Skip("no /dev/tty special file on this platform")
+	}
+	// This still returns "" for a test binary with no controlling
+	// terminal (go test's own process is not attached to one), so this
+	// assertion holds even when /dev/tty exists but can't be opened.
+	got := ttynameFromControllingTerminal()
+	if got != "" && got[:5] != "/dev/" {
+		t.Fatalf("ttynameFromControllingTerminal() = %q, want empty or a /dev/ path", got)
+	}
+}

@@ -41,15 +41,20 @@ func runWrapperCmd(args []string) error {
 	cwd, _ := os.Getwd()
 	dir := statusDir()
 	busy := Status{
-		V:         1,
-		ID:        resolvedID,
-		Agent:     agentName,
-		State:     "busy",
-		CWD:       cwd,
-		PID:       os.Getpid(),
-		TTY:       resolveTTY(),
+		V:     1,
+		ID:    resolvedID,
+		Agent: agentName,
+		State: "busy",
+		CWD:   cwd,
+		PID:   os.Getpid(),
+		TTY:   resolveTTY(),
+		// No TTL: unlike a hook-driven status (refreshed every turn, so a
+		// TTL catches a crashed agent), this status is only ever written
+		// once and explicitly removed when the wrapped process exits
+		// below. A run longer than a TTL would otherwise be derived
+		// "stale" and the renderer would restore the title while the
+		// agent is still working.
 		UpdatedAt: time.Now().UTC(),
-		TTLMS:     (5 * time.Minute).Milliseconds(),
 	}
 	if err := writeStatus(dir, busy); err != nil {
 		return err

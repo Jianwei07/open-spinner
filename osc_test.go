@@ -3,17 +3,17 @@ package main
 import "testing"
 
 func TestFrameForTickCyclesAndWraps(t *testing.T) {
-	if got := frameForTick(0); got != braillFrames[0] {
-		t.Fatalf("frame(0) = %q, want %q", got, braillFrames[0])
+	if got := frameForTick(0); got != brailleFrames[0] {
+		t.Fatalf("frame(0) = %q, want %q", got, brailleFrames[0])
 	}
-	if got := frameForTick(3); got != braillFrames[3] {
-		t.Fatalf("frame(3) = %q, want %q", got, braillFrames[3])
+	if got := frameForTick(3); got != brailleFrames[3] {
+		t.Fatalf("frame(3) = %q, want %q", got, brailleFrames[3])
 	}
-	// wraps at len(braillFrames) == 10
+	// wraps at len(brailleFrames) == 10
 	if got, want := frameForTick(10), frameForTick(0); got != want {
 		t.Fatalf("frame(10) = %q, want wrap to frame(0) = %q", got, want)
 	}
-	if got, want := frameForTick(23), braillFrames[3]; got != want {
+	if got, want := frameForTick(23), brailleFrames[3]; got != want {
 		t.Fatalf("frame(23) = %q, want %q", got, want)
 	}
 	// never panics on negative input

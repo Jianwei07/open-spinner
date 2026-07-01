@@ -37,6 +37,9 @@ func renderCmd(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if *interval <= 0 {
+		return errors.New("--interval must be positive")
+	}
 
 	resolvedID := resolveID(*id, "")
 	if resolvedID == "" {

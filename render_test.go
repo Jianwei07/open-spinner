@@ -302,3 +302,20 @@ func TestAcquireTTYLockReclaimsStaleLock(t *testing.T) {
 	}
 	releaseTTYLock(lock)
 }
+
+// TestRenderCmdRejectsNonPositiveInterval guards against time.NewTicker's
+// documented panic on a non-positive duration: --interval reaches
+// runRenderLoop unvalidated, and it's a plain string flag on the CLI, so
+// `--interval 0` or a negative duration must fail cleanly here rather than
+// crash the renderer.
+func TestRenderCmdRejectsNonPositiveInterval(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AGENT_STATUS_DIR", dir)
+
+	for _, interval := range []string{"0s", "-1s"} {
+		err := renderCmd([]string{"--id", "x", "--tty", "/dev/null", "--interval", interval})
+		if err == nil {
+			t.Fatalf("renderCmd with --interval %s: expected error, got nil", interval)
+		}
+	}
+}

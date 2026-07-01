@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -430,6 +431,34 @@ func resolveTTY() string {
 		}
 	}
 	if name, err := os.Readlink("/proc/self/fd/0"); err == nil && strings.HasPrefix(name, "/dev/") {
+		return name
+	}
+	return ttynameFromControllingTerminal()
+}
+
+// ttynameFromControllingTerminal resolves the real device path of this
+// process's controlling terminal on platforms with no /proc (macOS, BSD).
+// A hook's fd 0 is a JSON pipe, not the terminal, so reading fd 0 (as the
+// /proc/self/fd/0 fallback above does) is the wrong target there anyway
+// — /dev/tty always refers to the controlling terminal regardless of what
+// fd 0/1/2 are redirected to. That special file has no readable path of
+// its own, so tty(1) (present on every POSIX system, unlike a portable
+// ttyname(3) binding in the Go standard library) is asked to resolve it.
+func ttynameFromControllingTerminal() string {
+	f, err := os.OpenFile("/dev/tty", os.O_RDONLY, 0)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	cmd := exec.Command("tty")
+	cmd.Stdin = f
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	name := strings.TrimSpace(string(out))
+	if strings.HasPrefix(name, "/dev/") {
 		return name
 	}
 	return ""

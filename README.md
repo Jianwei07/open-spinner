@@ -93,7 +93,7 @@ Future install channels can add GitHub release binaries, Homebrew, and Scoop aft
 
 - **One renderer per tty, ever.** A lockfile keyed on the tty path means repeated hook fires (every prompt, every tool call) never spawn duplicates — later `set` calls just update the store, and the running renderer picks up the change on its next tick.
 - **Self-terminating, not a daemon.** It's lazily spawned on the first `busy`, and exits on its own: after the idle-grace window, immediately on an explicit `clear`, or the moment a tty write fails (tab closed). No orphan processes to clean up.
-- **Degrades to static automatically** under `$TMUX` (the outer tab isn't reachable from a tmux pane the way `print --format tmux` is), with `--no-anim`, or with `OPEN_SPINNER_ANIM=0` — a single write per state change instead of a ticker.
+- **Degrades to static automatically** under `$TMUX` (the outer tab isn't reachable from a tmux pane the way `print --format tmux` is), with `--no-anim`, or with `OPEN_SPINNER_ANIM=0` — the same poll loop still runs (it needs to notice `idle`/`clear` regardless), it just writes the static glyph once and skips re-writing on every tick instead of cycling spinner frames.
 - Ghostty only supports plain tab-title text (its maintainers have declined a richer badge feature); the glyph still shows, just without iTerm2-style badge styling.
 
 ## tmux Integration

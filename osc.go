@@ -7,7 +7,7 @@ package main
 const oscTitlePrefix = "\x1b]0;"
 const oscTitleSuffix = "\a"
 
-var braillFrames = [10]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+var brailleFrames = [10]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 // frameForTick returns the braille spinner glyph for a given tick, cycling
 // through the full set. Kept as a pure function so the cadence/wraparound
@@ -16,7 +16,7 @@ func frameForTick(tick int) string {
 	if tick < 0 {
 		tick = -tick
 	}
-	return braillFrames[tick%len(braillFrames)]
+	return brailleFrames[tick%len(brailleFrames)]
 }
 
 // glyphForState renders the tab-title text for a status. It returns
