@@ -25,6 +25,7 @@ type Status struct {
 	Text      string    `json:"text,omitempty"`
 	CWD       string    `json:"cwd,omitempty"`
 	PID       int       `json:"pid,omitempty"`
+	TTY       string    `json:"tty,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
 	TTLMS     int64     `json:"ttl_ms"`
 }
@@ -53,6 +54,14 @@ func run(args []string, out io.Writer) error {
 		return listCmd(args[1:], out)
 	case "print":
 		return printCmd(args[1:], out)
+	case "render":
+		return renderCmd(args[1:])
+	case "run":
+		return runWrapperCmd(args[1:])
+	case "install":
+		return installCmd(args[1:], out)
+	case "uninstall":
+		return uninstallCmd(args[1:], out)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -92,11 +101,19 @@ func setCmd(args []string) error {
 		Text:      *text,
 		CWD:       cwd,
 		PID:       os.Getpid(),
+		TTY:       resolveTTY(),
 		UpdatedAt: time.Now().UTC(),
 		TTLMS:     ttl.Milliseconds(),
 	}
 
-	return writeStatus(statusDir(), status)
+	if err := writeStatus(statusDir(), status); err != nil {
+		return err
+	}
+
+	if state == "busy" {
+		maybeSpawnRenderer(status)
+	}
+	return nil
 }
 
 func clearCmd(args []string) error {
@@ -353,6 +370,23 @@ func envID() string {
 		if value := os.Getenv(key); value != "" {
 			return value
 		}
+	}
+	return ""
+}
+
+// resolveTTY finds the terminal device this process should render status
+// into. It never scrapes terminal output — it only reads env vars a hook
+// or shell can set, or asks the kernel which tty controls this process.
+// An empty result means "no native-tab rendering available," which is a
+// valid, documented outcome (e.g. non-interactive shells, some CI runners).
+func resolveTTY() string {
+	for _, key := range []string{"OPEN_SPINNER_TTY", "AGENT_STATUS_TTY", "TTY", "SSH_TTY"} {
+		if value := os.Getenv(key); value != "" {
+			return value
+		}
+	}
+	if name, err := os.Readlink("/proc/self/fd/0"); err == nil && strings.HasPrefix(name, "/dev/") {
+		return name
 	}
 	return ""
 }
