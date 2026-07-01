@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -25,6 +26,7 @@ type Status struct {
 	Text      string    `json:"text,omitempty"`
 	CWD       string    `json:"cwd,omitempty"`
 	PID       int       `json:"pid,omitempty"`
+	TTY       string    `json:"tty,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
 	TTLMS     int64     `json:"ttl_ms"`
 }
@@ -53,6 +55,14 @@ func run(args []string, out io.Writer) error {
 		return listCmd(args[1:], out)
 	case "print":
 		return printCmd(args[1:], out)
+	case "render":
+		return renderCmd(args[1:])
+	case "run":
+		return runWrapperCmd(args[1:])
+	case "install":
+		return installCmd(args[1:], out)
+	case "uninstall":
+		return uninstallCmd(args[1:], out)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -92,11 +102,19 @@ func setCmd(args []string) error {
 		Text:      *text,
 		CWD:       cwd,
 		PID:       os.Getpid(),
+		TTY:       resolveTTY(),
 		UpdatedAt: time.Now().UTC(),
 		TTLMS:     ttl.Milliseconds(),
 	}
 
-	return writeStatus(statusDir(), status)
+	if err := writeStatus(statusDir(), status); err != nil {
+		return err
+	}
+
+	if state == "busy" {
+		maybeSpawnRenderer(status)
+	}
+	return nil
 }
 
 func clearCmd(args []string) error {
@@ -338,12 +356,26 @@ func safeName(id string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// resolveID picks the status ID a `set`/`clear` invocation should use.
+// Priority: explicit --id, then env vars, then the hook's own stdin JSON
+// session_id (Claude Code and Codex both deliver one, but only via stdin —
+// never as an env var), then the resolved tty (already unique per tab),
+// and only then the bare agent name. Skipping any of the middle steps
+// silently collapses every session of the same agent onto one status
+// file, which is the exact bug this chain exists to prevent: one tab's
+// hook firing can flip a different, already-finished tab back to busy.
 func resolveID(explicit, fallbackAgent string) string {
 	if explicit != "" {
 		return explicit
 	}
 	if id := envID(); id != "" {
 		return id
+	}
+	if id := sessionIDFromStdin(); id != "" {
+		return id
+	}
+	if tty := resolveTTY(); tty != "" {
+		return tty
 	}
 	return fallbackAgent
 }
@@ -353,6 +385,81 @@ func envID() string {
 		if value := os.Getenv(key); value != "" {
 			return value
 		}
+	}
+	return ""
+}
+
+// sessionIDFromStdin extracts session_id from a hook's stdin JSON payload.
+// It only ever reads stdin when stdin is provably not an interactive
+// terminal (a pipe, as every Claude Code / Codex hook invocation provides),
+// so it can never block a manual CLI call, a test, or `open-spinner run`
+// wrapping an interactive agent.
+func sessionIDFromStdin() string {
+	info, err := os.Stdin.Stat()
+	if err != nil || info.Mode()&os.ModeCharDevice != 0 {
+		return ""
+	}
+	data, err := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	var payload struct {
+		SessionID string `json:"session_id"`
+		// Cursor CLI's hook payload uses conversation_id instead of
+		// session_id, but plays the same role: a stable id across a
+		// session's turns, present on every hook fired mid-session.
+		ConversationID string `json:"conversation_id"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return ""
+	}
+	if payload.SessionID != "" {
+		return payload.SessionID
+	}
+	return payload.ConversationID
+}
+
+// resolveTTY finds the terminal device this process should render status
+// into. It never scrapes terminal output — it only reads env vars a hook
+// or shell can set, or asks the kernel which tty controls this process.
+// An empty result means "no native-tab rendering available," which is a
+// valid, documented outcome (e.g. non-interactive shells, some CI runners).
+func resolveTTY() string {
+	for _, key := range []string{"OPEN_SPINNER_TTY", "AGENT_STATUS_TTY", "TTY", "SSH_TTY"} {
+		if value := os.Getenv(key); value != "" {
+			return value
+		}
+	}
+	if name, err := os.Readlink("/proc/self/fd/0"); err == nil && strings.HasPrefix(name, "/dev/") {
+		return name
+	}
+	return ttynameFromControllingTerminal()
+}
+
+// ttynameFromControllingTerminal resolves the real device path of this
+// process's controlling terminal on platforms with no /proc (macOS, BSD).
+// A hook's fd 0 is a JSON pipe, not the terminal, so reading fd 0 (as the
+// /proc/self/fd/0 fallback above does) is the wrong target there anyway
+// — /dev/tty always refers to the controlling terminal regardless of what
+// fd 0/1/2 are redirected to. That special file has no readable path of
+// its own, so tty(1) (present on every POSIX system, unlike a portable
+// ttyname(3) binding in the Go standard library) is asked to resolve it.
+func ttynameFromControllingTerminal() string {
+	f, err := os.OpenFile("/dev/tty", os.O_RDONLY, 0)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	cmd := exec.Command("tty")
+	cmd.Stdin = f
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	name := strings.TrimSpace(string(out))
+	if strings.HasPrefix(name, "/dev/") {
+		return name
 	}
 	return ""
 }
