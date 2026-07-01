@@ -1,130 +1,74 @@
-# open-spinner Test Prompt
+# open-spinner Visual Tab Test
 
-Copy/paste this into any coding agent (OpenCode, Pi, Codex, Claude Code, etc.) to test open-spinner.
+Paste this into any coding agent CLI (Claude Code, Codex, OpenCode, pi, jcode, etc). Works the same regardless of terminal emulator or which agent is reading it — it drives `open-spinner` directly with synthetic states instead of relying on that agent's own hooks.
 
 ---
 
-Test open-spinner. Execute these steps with 10 second pauses between each.
+You are testing whether `open-spinner` correctly renders three states into this terminal tab's title: **busy** (animated spinner), **attention** (steady `!`/`⚠`), and **idle/stop** (clears). Run the steps below in order, pausing so each state is visible long enough to eyeball, then report what you saw. Clean up everything you created when done, even if a step fails.
 
-## Step 2: Static wrapper test
+## Setup
 
 ```sh
-cd /Users/jayden77/dev/open-spinner
-tmp=$(mktemp -d)
-AGENT_STATUS_DIR=$tmp OPEN_SPINNER_TTY=$(tty) ./open-spinner run -- sleep 5
+BIN=""
+if [ -x ./open-spinner ]; then BIN=./open-spinner
+elif command -v open-spinner >/dev/null 2>&1; then BIN=open-spinner
+else BIN="go run ."
+fi
+
+TMP=$(mktemp -d)
+export AGENT_STATUS_DIR="$TMP"
+export OPEN_SPINNER_TTY=$(tty)
+ID=spin-visual-test
 ```
 
-Watch Ghostty tab title while this runs. Report:
-- What glyph appears?
-- Animated or static?
-- Clears after 5s?
-
-Wait 10 seconds.
-
----
-
-## Step 3: Check cleanup
+## Step 1: Busy — spinner should animate
 
 ```sh
-pgrep -f "open-spinner.*render" | wc -l
+$BIN set busy --agent $ID --id $ID
 ```
 
-Should be 0. Report count.
+Watch the tab title for 8 seconds. Report:
+- Glyph + agent name visible?
+- Is it animating (cycling braille frames), not static?
 
-Wait 10 seconds.
-
----
-
-## Step 4: Detect installed agents
+## Step 2: Attention — steady `!`/`⚠`
 
 ```sh
-ls -d ~/.claude ~/.codex ~/.config/opencode 2>/dev/null
+$BIN set attention --agent $ID --id $ID --text "needs you"
 ```
 
-Report which agent config dirs exist.
+Watch the tab title for 8 seconds. Report:
+- Shows `⚠`?
+- Steady, NOT animated (this is how it must differ from busy)?
 
-Wait 10 seconds.
-
----
-
-## Step 5: Install open-spinner hooks
+## Step 3: Idle then clear
 
 ```sh
-./open-spinner install
+$BIN set idle --agent $ID --id $ID
 ```
 
-Report: which agents installed? any errors?
+Watch for ~3 seconds. Report:
+- Shows `●` idle?
+- Title clears/restores on its own shortly after (idle-grace window)?
 
-Wait 10 seconds.
-
----
-
-## Step 6: Trigger agent busy state
-
-Use whatever agent you detected above. Do something that makes it "think" — ask a question, request code generation, etc. This triggers the agent's "busy" hook.
-
-Watch the tab title. Report:
-- Glyph appears?
-- Animated braille or static?
-- Agent name visible?
-
-Wait 10 seconds.
-
----
-
-## Step 7: Trigger agent attention state
-
-Request something that needs approval/permission from the agent (varies by agent).
-
-Check tab title. Report:
-- Shows ⚠ icon?
-- Steady (not animated)?
-
-Wait 10 seconds.
-
----
-
-## Step 8: Agent finishes
-
-Let the agent complete the task.
-
-Check tab title. Report:
-- Shows ● idle?
-- Clears after ~2s?
-
-Wait 10 seconds.
-
----
-
-## Step 8b: Two concurrent sessions of the same agent (regression check)
-
-Open a **second** tab/window and start another session of the *same* agent
-you used above. This is the scenario that previously made the spinner get
-stuck — each session used to collapse onto one shared status file, so one
-tab's activity re-armed a different, already-finished tab.
-
-1. In tab 1, let the agent go idle (tab title clears).
-2. In tab 2, send a new prompt so it goes busy.
-3. Check tab 1's title again.
-
-Report: does tab 1 stay idle/cleared, or does it get flipped back to busy
-by tab 2's activity? It must stay idle — if it re-animates, the session
-isolation fix regressed.
-
-Wait 10 seconds.
-
----
-
-## Step 9: Final cleanup
+If it hasn't cleared on its own, force it:
 
 ```sh
-pgrep -f "open-spinner.*render" | wc -l
+$BIN clear --id $ID
 ```
 
-Should be 0. Report count.
+Confirm the title is back to normal.
 
----
+## Cleanup — do this even if a step above failed
 
-## Summary
+```sh
+$BIN clear --id $ID
+pgrep -f "open-spinner.*render.*$ID" | wc -l   # should be 0
+rm -rf "$TMP"
+```
 
-Report all observations + any crashes/errors.
+Report the leftover-process count (must be 0) and confirm the temp dir was removed.
+
+## Report
+
+Summarize: did busy/attention/idle each look visibly distinct (spin vs steady `⚠` vs clear)? Any stuck title, leftover process, or error along the way?

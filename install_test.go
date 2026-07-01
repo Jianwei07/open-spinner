@@ -129,6 +129,90 @@ func TestUninstallClaudeNoOpWhenNeverInstalled(t *testing.T) {
 	}
 }
 
+// --- Qwen Code ---
+
+func TestInstallQwenIsIdempotent(t *testing.T) {
+	home := t.TempDir()
+	if err := installQwen(home, "/bin/open-spinner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := installQwen(home, "/bin/open-spinner"); err != nil {
+		t.Fatal(err)
+	}
+
+	root := readJSONFile(t, filepath.Join(home, ".qwen", "settings.json"))
+	hooks := root["hooks"].(map[string]interface{})
+	for _, event := range []string{"UserPromptSubmit", "Notification", "Stop"} {
+		groups, ok := hooks[event].([]interface{})
+		if !ok {
+			t.Fatalf("event %s missing after install", event)
+		}
+		if got := countManagedGroups(groups); got != 1 {
+			t.Fatalf("event %s: got %d managed groups after two installs, want exactly 1", event, got)
+		}
+	}
+}
+
+func TestInstallQwenPreservesUnrelatedConfig(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".qwen", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seed := `{
+		"model": "qwen3-coder-plus",
+		"hooks": {
+			"UserPromptSubmit": [
+				{"hooks": [{"type": "command", "command": "echo user-hook"}]}
+			]
+		}
+	}`
+	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := installQwen(home, "/bin/open-spinner"); err != nil {
+		t.Fatal(err)
+	}
+
+	root := readJSONFile(t, path)
+	if _, ok := root["model"]; !ok {
+		t.Fatal("unrelated top-level key 'model' was dropped by install")
+	}
+	groups := root["hooks"].(map[string]interface{})["UserPromptSubmit"].([]interface{})
+	if len(groups) != 2 {
+		t.Fatalf("expected user's existing hook group + our managed group (2), got %d", len(groups))
+	}
+}
+
+func TestUninstallQwenRemovesOnlyManagedGroup(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".qwen", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seed := `{"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": "echo user-hook"}]}]}}`
+	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := installQwen(home, "/bin/open-spinner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := uninstallQwen(home); err != nil {
+		t.Fatal(err)
+	}
+
+	root := readJSONFile(t, path)
+	groups := root["hooks"].(map[string]interface{})["UserPromptSubmit"].([]interface{})
+	if len(groups) != 1 {
+		t.Fatalf("expected only the user's original group to remain, got %d", len(groups))
+	}
+	if countManagedGroups(groups) != 0 {
+		t.Fatal("managed group still present after uninstall")
+	}
+}
+
 // --- Codex ---
 
 func TestInstallCodexIsIdempotent(t *testing.T) {
@@ -177,6 +261,94 @@ func TestUninstallCodexRemovesOnlyManagedEntry(t *testing.T) {
 
 	root := readJSONFile(t, path)
 	arr := root["UserPromptSubmit"].([]interface{})
+	if len(arr) != 1 {
+		t.Fatalf("expected only the user's entry to remain, got %d", len(arr))
+	}
+}
+
+// --- Cursor CLI ---
+
+func TestInstallCursorIsIdempotent(t *testing.T) {
+	home := t.TempDir()
+	if err := installCursor(home, "/bin/open-spinner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := installCursor(home, "/bin/open-spinner"); err != nil {
+		t.Fatal(err)
+	}
+
+	root := readJSONFile(t, filepath.Join(home, ".cursor", "hooks.json"))
+	if v, _ := root["version"].(float64); v != 1 {
+		t.Fatalf("expected version 1, got %v", root["version"])
+	}
+	hooks := root["hooks"].(map[string]interface{})
+	for _, event := range []string{"beforeSubmitPrompt", "stop"} {
+		arr, ok := hooks[event].([]interface{})
+		if !ok {
+			t.Fatalf("event %s missing after install", event)
+		}
+		managed := 0
+		for _, e := range arr {
+			if isManagedEntry(e) {
+				managed++
+			}
+			m := e.(map[string]interface{})
+			if m["type"] != "command" {
+				t.Fatalf("event %s entry missing type:command: %v", event, m)
+			}
+		}
+		if managed != 1 {
+			t.Fatalf("event %s: got %d managed entries after two installs, want exactly 1", event, managed)
+		}
+	}
+	// No attention mapping for Cursor — deliberate, documented gap.
+	if _, ok := hooks["Notification"]; ok {
+		t.Fatal("cursor installer should not write an attention/Notification hook")
+	}
+}
+
+func TestInstallCursorPreservesUnrelatedConfigAndVersion(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".cursor", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seed := `{"version": 1, "hooks": {"beforeSubmitPrompt": [{"type": "command", "command": "echo user"}]}}`
+	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := installCursor(home, "/bin/open-spinner"); err != nil {
+		t.Fatal(err)
+	}
+
+	root := readJSONFile(t, path)
+	arr := root["hooks"].(map[string]interface{})["beforeSubmitPrompt"].([]interface{})
+	if len(arr) != 2 {
+		t.Fatalf("expected user's entry + our managed entry (2), got %d", len(arr))
+	}
+}
+
+func TestUninstallCursorRemovesOnlyManagedEntry(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".cursor", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seed := `{"version": 1, "hooks": {"beforeSubmitPrompt": [{"type": "command", "command": "echo user"}]}}`
+	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := installCursor(home, "/bin/open-spinner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := uninstallCursor(home); err != nil {
+		t.Fatal(err)
+	}
+
+	root := readJSONFile(t, path)
+	arr := root["hooks"].(map[string]interface{})["beforeSubmitPrompt"].([]interface{})
 	if len(arr) != 1 {
 		t.Fatalf("expected only the user's entry to remain, got %d", len(arr))
 	}
@@ -456,6 +628,50 @@ func TestInstallCmdAutodetectsFromConfigDirs(t *testing.T) {
 	}
 	if strings.Contains(got, "opencode") {
 		t.Fatalf("opencode config dir wasn't present, should not have been installed: %q", got)
+	}
+}
+
+func TestInstallCmdAutodetectsQwenAndCursorFromConfigDirs(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".qwen"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".cursor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+
+	var out bytes.Buffer
+	if err := installCmd(nil, &out); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "qwen") || !strings.Contains(got, "cursor") {
+		t.Fatalf("expected qwen and cursor to be autodetected and installed, got %q", got)
+	}
+}
+
+func TestInstallCmdAutodetectsZaiAndMimoFromPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SHELL", "/bin/zsh")
+
+	fakeBinDir := t.TempDir()
+	for _, agent := range []string{"zai", "mimo"} {
+		fakeBin := filepath.Join(fakeBinDir, agent)
+		if err := os.WriteFile(fakeBin, []byte("#!/bin/sh\necho fake\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", fakeBinDir)
+
+	var out bytes.Buffer
+	if err := installCmd(nil, &out); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "zai") || !strings.Contains(got, "mimo") {
+		t.Fatalf("expected zai and mimo to be autodetected via PATH and installed, got %q", got)
 	}
 }
 

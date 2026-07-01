@@ -39,6 +39,24 @@ func TestSessionIDFromStdinReadsJSONPipe(t *testing.T) {
 	}
 }
 
+func TestSessionIDFromStdinReadsConversationID(t *testing.T) {
+	// Cursor CLI's hook payload uses conversation_id instead of
+	// session_id (confirmed via cursor.com/docs/hooks); without this
+	// fallback, every Cursor session would collapse onto one status file
+	// the same way the original stuck-spinner bug did.
+	withStdinPipe(t, `{"conversation_id":"conv-123","cwd":"/tmp"}`)
+	if got := sessionIDFromStdin(); got != "conv-123" {
+		t.Fatalf("sessionIDFromStdin() = %q, want %q", got, "conv-123")
+	}
+}
+
+func TestSessionIDFromStdinPrefersSessionIDOverConversationID(t *testing.T) {
+	withStdinPipe(t, `{"session_id":"sess-abc","conversation_id":"conv-123"}`)
+	if got := sessionIDFromStdin(); got != "sess-abc" {
+		t.Fatalf("sessionIDFromStdin() = %q, want session_id to win", got)
+	}
+}
+
 func TestSessionIDFromStdinEmptyOnNonJSON(t *testing.T) {
 	withStdinPipe(t, "not json")
 	if got := sessionIDFromStdin(); got != "" {

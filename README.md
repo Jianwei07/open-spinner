@@ -12,7 +12,7 @@ Several mature tmux-native tools already do multi-agent status well (tmux-agent-
 
 ## Status
 
-V0.2: the V0.1 local JSON store, plus native-tab rendering, bundled hook installers for Claude Code/Codex/OpenCode, and a wrapper for agents with no hook system at all.
+V0.2: the V0.1 local JSON store, plus native-tab rendering, bundled hook installers for Claude Code/Codex/OpenCode/Qwen Code/Cursor CLI, PATH shims for hookless agents (`pi`/`jcode`/`zai`/`mimo`), and a `run` wrapper for anything else.
 
 ## Install
 
@@ -31,12 +31,12 @@ go run . --version
 ## Quickstart
 
 ```sh
-open-spinner install          # auto-detects Claude Code / Codex / OpenCode config dirs and wires their hooks
+open-spinner install          # auto-detects installed agents and wires their hooks/shims
 ```
 
 That's it — busy agents now animate their tab title. To uninstall: `open-spinner uninstall`.
 
-`pi` and `jcode` don't need manual wrapping — `open-spinner install pi` (or `jcode`) installs a PATH shim that does this automatically. For any other agent with no hook system at all, wrap it manually instead:
+`pi`, `jcode`, `zai`, and `mimo` don't need manual wrapping — `open-spinner install pi` (or `jcode`/`zai`/`mimo`) installs a PATH shim that does this automatically. For any other agent with no hook system at all, wrap it manually instead:
 
 ```sh
 open-spinner run -- pi chat
@@ -79,8 +79,8 @@ Supported commands:
 - `clear [--id <id>] [--agent <name>]`
 - `list --format json`
 - `print --format plain|tmux|json`
-- `install [claude|codex|opencode|pi|jcode...]` — with no arguments, auto-detects installed agents: `claude`/`codex`/`opencode` by config-dir presence (`~/.claude`, `~/.codex`, `~/.config/opencode`), `pi`/`jcode` by PATH lookup. For `pi`/`jcode` (no hook system of their own), install writes a PATH shim under `~/.open-spinner/shims/` that wraps the real binary in `run`, plus a one-time PATH line appended to your shell rc file (`~/.zshrc`/`~/.bashrc`/`~/.profile`, chosen by `$SHELL`) — open a new shell or re-source your rc file for it to take effect. Safe to re-run; only ever touches entries it wrote itself.
-- `uninstall [claude|codex|opencode|pi|jcode...]` — reverses `install`. With no arguments, tries all known agents (a no-op wherever nothing was installed).
+- `install [claude|codex|opencode|qwen|cursor|pi|jcode|zai|mimo...]` — with no arguments, auto-detects installed agents: `claude`/`codex`/`opencode`/`qwen`/`cursor` by config-dir presence (`~/.claude`, `~/.codex`, `~/.config/opencode`, `~/.qwen`, `~/.cursor`), `pi`/`jcode`/`zai`/`mimo` by PATH lookup. For the PATH-lookup group (no hook system of their own — or none confirmed yet, see Scope), install writes a PATH shim under `~/.open-spinner/shims/` that wraps the real binary in `run`, plus a one-time PATH line appended to your shell rc file (`~/.zshrc`/`~/.bashrc`/`~/.profile`, chosen by `$SHELL`) — open a new shell or re-source your rc file for it to take effect. Safe to re-run; only ever touches entries it wrote itself.
+- `uninstall [claude|codex|opencode|qwen|cursor|pi|jcode|zai|mimo...]` — reverses `install`. With no arguments, tries all known agents (a no-op wherever nothing was installed).
 - `run [--agent name] [--id id] -- <command> [args...]` — for agents with no hook system: marks the whole run `busy`, clears on exit. Coarse (whole process lifetime, not per-turn), but honest — no scraping involved.
 - `render --id <id> [--tty <path>] [--no-anim] [--restore <title>]` — the tab-title renderer itself. Normally spawned automatically by `set busy` or `run`; only call directly for debugging.
 - `version` or `--version`
@@ -178,11 +178,13 @@ What's here:
 
 - local JSON store — `set`, `clear`, `list`, `print` (plain/tmux/JSON), TTL-based stale state
 - native tab-title rendering via OSC 0, animated with a static fallback
-- bundled hook installers for Claude Code, Codex, and OpenCode
-- a `run` wrapper for agents without a hook system, plus installable PATH shims for `pi`/`jcode`
+- bundled hook installers for Claude Code, Codex, OpenCode, Qwen Code, and Cursor CLI
+- a `run` wrapper for agents without a hook system, plus installable PATH shims for `pi`/`jcode`/`zai`/`mimo`
 
 Deliberate limits, not oversights:
 
-- No auto-detection of *arbitrary* agent CLIs — hooks are bundled for Claude Code/Codex/OpenCode, and `pi`/`jcode` get an installable PATH shim around `run`; any other hookless agent still goes through `run` manually (whole-process-lifetime granularity) or needs its own adapter.
+- No auto-detection of *arbitrary* agent CLIs — hooks are bundled for the agents above with confirmed schemas; any other hookless agent still goes through `run` manually (whole-process-lifetime granularity) or needs its own adapter.
+- **Cursor CLI has no `attention` state.** Its hook events don't include a clean "needs user input" analog — the closest ones (`beforeShellExecution`, `beforeMCPExecution`) are approval-decision hooks that likely expect a specific allow/deny JSON on stdout, and open-spinner's fire-and-forget `set` doesn't produce one. Wiring that blind risks silently blocking your own shell commands, which is worse than a missing tab glyph — so Cursor only gets `busy`/`idle` for now.
+- **`zai` and `mimo` (Xiaomi's MiMo Code) are PATH shims, not hook installers**, even though MiMo is a fork of OpenCode and may retain its plugin system — its plugin directory convention isn't confirmed anywhere, and guessing it wrong would silently never load (this is exactly how the Codex `Notification` bug happened: an unverified event name that just never fires). The shim is coarse but always correct; a native MiMo plugin installer is a good follow-up once someone confirms the actual plugin path.
 - No terminal-output scraping, ever.
 - No animation under tmux — static/`print --format tmux` there instead.

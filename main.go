@@ -404,11 +404,18 @@ func sessionIDFromStdin() string {
 	}
 	var payload struct {
 		SessionID string `json:"session_id"`
+		// Cursor CLI's hook payload uses conversation_id instead of
+		// session_id, but plays the same role: a stable id across a
+		// session's turns, present on every hook fired mid-session.
+		ConversationID string `json:"conversation_id"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return ""
 	}
-	return payload.SessionID
+	if payload.SessionID != "" {
+		return payload.SessionID
+	}
+	return payload.ConversationID
 }
 
 // resolveTTY finds the terminal device this process should render status

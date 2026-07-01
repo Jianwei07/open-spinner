@@ -20,11 +20,16 @@ const managedFileMarker = "managed-by: open-spinner"
 const pathBlockStart = "# >>> open-spinner >>>"
 const pathBlockEnd = "# <<< open-spinner <<<"
 
-var knownAgents = []string{"claude", "codex", "opencode", "pi", "jcode"}
+var knownAgents = []string{"claude", "codex", "opencode", "qwen", "cursor", "pi", "jcode", "zai", "mimo"}
 
-// shimAgents are hookless agents (no lifecycle hook/plugin system) that get
-// installed via a PATH shim around the `run` wrapper instead of hook config.
-var shimAgents = []string{"pi", "jcode"}
+// shimAgents are hookless agents (no confirmed lifecycle hook/plugin system)
+// that get installed via a PATH shim around the `run` wrapper instead of
+// hook config. zai and mimo land here deliberately: mimo is a fork of
+// OpenCode and may retain its plugin system, but its plugin directory
+// convention isn't confirmed anywhere, and a guessed path would silently
+// never load (exactly how the Codex "Notification" event bug happened).
+// The shim is coarse (whole-process busy) but always correct.
+var shimAgents = []string{"pi", "jcode", "zai", "mimo"}
 
 func installCmd(args []string, out io.Writer) error {
 	fs := newFlagSet("install")
@@ -115,13 +120,19 @@ func resolveAgentTargets(explicit []string, autodetectRequiresConfig bool) ([]st
 	if dirExists(filepath.Join(home, ".config", "opencode")) {
 		detected = append(detected, "opencode")
 	}
+	if dirExists(filepath.Join(home, ".qwen")) {
+		detected = append(detected, "qwen")
+	}
+	if dirExists(filepath.Join(home, ".cursor")) {
+		detected = append(detected, "cursor")
+	}
 	for _, agent := range shimAgents {
 		if _, err := exec.LookPath(agent); err == nil {
 			detected = append(detected, agent)
 		}
 	}
 	if len(detected) == 0 {
-		return nil, errors.New("no known agent config directories or hookless agent binaries found (~/.claude, ~/.codex, ~/.config/opencode, or pi/jcode on PATH); pass agent names explicitly, e.g. open-spinner install claude")
+		return nil, errors.New("no known agent config directories or hookless agent binaries found (~/.claude, ~/.codex, ~/.config/opencode, ~/.qwen, ~/.cursor, or pi/jcode/zai/mimo on PATH); pass agent names explicitly, e.g. open-spinner install claude")
 	}
 	return detected, nil
 }
@@ -134,7 +145,11 @@ func installAgent(agent, home, bin string) error {
 		return installCodex(home, bin)
 	case "opencode":
 		return installOpenCode(home, bin)
-	case "pi", "jcode":
+	case "qwen":
+		return installQwen(home, bin)
+	case "cursor":
+		return installCursor(home, bin)
+	case "pi", "jcode", "zai", "mimo":
 		return installShimAgent(agent, home, bin)
 	default:
 		return fmt.Errorf("unknown agent %q", agent)
@@ -149,7 +164,11 @@ func uninstallAgent(agent, home string) error {
 		return uninstallCodex(home)
 	case "opencode":
 		return uninstallOpenCode(home)
-	case "pi", "jcode":
+	case "qwen":
+		return uninstallQwen(home)
+	case "cursor":
+		return uninstallCursor(home)
+	case "pi", "jcode", "zai", "mimo":
 		return uninstallShimAgent(agent, home)
 	default:
 		return fmt.Errorf("unknown agent %q", agent)
@@ -267,6 +286,84 @@ func isManagedHookGroup(g interface{}) bool {
 	return false
 }
 
+// --- Qwen Code: ~/.qwen/settings.json hooks ---
+//
+// Qwen Code's hook system is a confirmed Claude Code-compatible clone: same
+// nested matcher/hooks group schema, same event names, and stdin JSON
+// confirmed to carry session_id (see plan doc for sources). Reuses
+// upsertManagedHookGroup/isManagedHookGroup verbatim.
+
+func installQwen(home, bin string) error {
+	path := filepath.Join(home, ".qwen", "settings.json")
+	root, _, err := loadJSONObjectOrEmpty(path)
+	if err != nil {
+		return err
+	}
+
+	hooks, _ := root["hooks"].(map[string]interface{})
+	if hooks == nil {
+		hooks = map[string]interface{}{}
+	}
+
+	for event, verb := range qwenEventVerbs() {
+		command := fmt.Sprintf("%s %s --agent qwen", bin, verb)
+		hooks[event] = upsertManagedHookGroup(hooks[event], command)
+	}
+	root["hooks"] = hooks
+	return saveJSONObject(path, root)
+}
+
+func uninstallQwen(home string) error {
+	path := filepath.Join(home, ".qwen", "settings.json")
+	root, existed, err := loadJSONObjectOrEmpty(path)
+	if err != nil || !existed {
+		return err
+	}
+
+	hooks, ok := root["hooks"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	changed := false
+	for event, val := range hooks {
+		arr, ok := val.([]interface{})
+		if !ok {
+			continue
+		}
+		var kept []interface{}
+		for _, group := range arr {
+			if isManagedHookGroup(group) {
+				changed = true
+				continue
+			}
+			kept = append(kept, group)
+		}
+		if len(kept) == 0 {
+			delete(hooks, event)
+		} else {
+			hooks[event] = kept
+		}
+	}
+	if !changed {
+		return nil
+	}
+	if len(hooks) == 0 {
+		delete(root, "hooks")
+	} else {
+		root["hooks"] = hooks
+	}
+	return saveJSONObject(path, root)
+}
+
+func qwenEventVerbs() map[string]string {
+	return map[string]string{
+		"UserPromptSubmit": "set busy",
+		"Notification":     "set attention",
+		"Stop":             "set idle",
+	}
+}
+
 // --- Codex: ~/.codex/hooks.json ---
 
 func installCodex(home, bin string) error {
@@ -322,6 +419,115 @@ func codexEventVerbs() map[string]string {
 		"PermissionRequest": "set attention",
 		"Stop":              "set idle",
 	}
+}
+
+// --- Cursor CLI: ~/.cursor/hooks.json ---
+//
+// Confirmed via cursor.com/docs/hooks: a flat schema, genuinely different
+// from Claude/Qwen's nested matcher/hooks groups — {"version": 1, "hooks":
+// {"<event>": [{"command", "type", ...}]}}. No dedicated installer for
+// "attention": Cursor has no clean analog (the closest events,
+// beforeShellExecution/beforeMCPExecution, are approval-decision hooks
+// that likely expect a specific allow/deny JSON on stdout, which
+// open-spinner's fire-and-forget `set` does not produce — wiring that
+// blind risks silently blocking the user's own shell commands, a worse
+// failure than a missing tab glyph). Busy/idle only, deliberately.
+
+func installCursor(home, bin string) error {
+	path := filepath.Join(home, ".cursor", "hooks.json")
+	root, _, err := loadJSONObjectOrEmpty(path)
+	if err != nil {
+		return err
+	}
+	if _, ok := root["version"]; !ok {
+		root["version"] = 1
+	}
+
+	hooks, _ := root["hooks"].(map[string]interface{})
+	if hooks == nil {
+		hooks = map[string]interface{}{}
+	}
+
+	for event, verb := range cursorEventVerbs() {
+		command := fmt.Sprintf("%s %s --agent cursor", bin, verb)
+		hooks[event] = upsertManagedCursorEntries(hooks[event], command)
+	}
+	root["hooks"] = hooks
+	return saveJSONObject(path, root)
+}
+
+func uninstallCursor(home string) error {
+	path := filepath.Join(home, ".cursor", "hooks.json")
+	root, existed, err := loadJSONObjectOrEmpty(path)
+	if err != nil || !existed {
+		return err
+	}
+
+	hooks, ok := root["hooks"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	changed := false
+	for event, val := range hooks {
+		arr, ok := val.([]interface{})
+		if !ok {
+			continue
+		}
+		var kept []interface{}
+		for _, e := range arr {
+			if isManagedEntry(e) {
+				changed = true
+				continue
+			}
+			kept = append(kept, e)
+		}
+		if len(kept) == 0 {
+			delete(hooks, event)
+		} else {
+			hooks[event] = kept
+		}
+	}
+	if !changed {
+		return nil
+	}
+	if len(hooks) == 0 {
+		delete(root, "hooks")
+	} else {
+		root["hooks"] = hooks
+	}
+	return saveJSONObject(path, root)
+}
+
+func cursorEventVerbs() map[string]string {
+	return map[string]string{
+		"beforeSubmitPrompt": "set busy",
+		"stop":               "set idle",
+	}
+}
+
+// upsertManagedCursorEntries mirrors upsertManagedEntries but includes the
+// "type": "command" field Cursor's documented schema shows on every entry.
+// Kept separate from Codex's helper rather than adding the field there:
+// Codex's hook config schema wasn't confirmed to tolerate an extra field
+// the same way (its stdin *payload* schemas use deny_unknown_fields, and
+// the config-side schema wasn't verified either way) — safer to not risk
+// a working integration to save a few lines.
+func upsertManagedCursorEntries(existing interface{}, command string) []interface{} {
+	var entries []interface{}
+	if arr, ok := existing.([]interface{}); ok {
+		for _, e := range arr {
+			if !isManagedEntry(e) {
+				entries = append(entries, e)
+			}
+		}
+	}
+	entries = append(entries, map[string]interface{}{
+		"type":       "command",
+		"command":    command,
+		"_managedBy": managedMarkerValue,
+	})
+	return entries
 }
 
 func upsertManagedEntries(existing interface{}, command string) []interface{} {
