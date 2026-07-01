@@ -73,7 +73,15 @@ func renderCmd(args []string) error {
 	}
 	defer releaseTTYLock(lock)
 
-	ttyFile, err := os.OpenFile(cfg.tty, os.O_WRONLY, 0)
+	// O_NOCTTY matters: this process runs in its own session (Setsid, see
+	// detachedSysProcAttr) with no controlling terminal. Without it,
+	// opening a tty device implicitly makes it the controlling terminal
+	// for this session — which can put the renderer in a different
+	// process group than the tty's foreground group, and the kernel
+	// suspends (SIGTTOU) any background-group write to a controlling
+	// terminal. That looks exactly like "the spinner got stuck": the
+	// process is alive but frozen mid-frame, holding the lock forever.
+	ttyFile, err := os.OpenFile(cfg.tty, os.O_WRONLY|syscall.O_NOCTTY, 0)
 	if err != nil {
 		return err
 	}

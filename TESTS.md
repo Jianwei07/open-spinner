@@ -36,19 +36,35 @@ All layers below run in `go test ./...` except the manual smoke matrix.
    preserved; uninstall removes only entries/files tagged as
    open-spinner-managed and is a no-op when nothing was installed;
    installing OpenCode's plugin refuses to clobber a pre-existing
-   unmanaged file.
+   unmanaged file. Hookless-agent shims (`pi`, `jcode`) get the same
+   treatment: the generated shim script is byte-identical across repeat
+   installs, install refuses to overwrite an unmanaged same-named file in
+   the shim directory, and uninstall removes only files carrying the
+   managed marker. The one-time PATH rc-block append is checked for
+   idempotency across installing both agents (by content, not by
+   re-running a shell), and `shellRCPath` is tested against zsh/bash/other
+   `$SHELL` values.
 4. **Fake-agent end-to-end** (`tests/fake_agent_test.go`): replays the
    exact CLI sequence a real hook config fires — `set busy` (UserPromptSubmit)
    -> `set attention` (Notification) -> `set idle` (Stop) -> `clear`
    (session end) — against a real PTY, with no real agent or API key
    involved. Proves the full chain: status write -> auto-spawned renderer
    -> OSC bytes on the tty -> clean shutdown on clear.
+5. **Shim exec correctness** (`tests/shim_agent_test.go`): builds the real
+   binary, installs a `pi` shim against a temp `$HOME` with a fake `pi`
+   executable on `PATH`, then execs the shim directly to prove it resolves
+   the real binary (skipping its own directory), passes through
+   args/exit code/stdio, marks the agent busy for the run's duration, and
+   cleans up after exit. A second case removes the fake binary from
+   `PATH` and asserts the shim fails clearly (exit 127, stderr message)
+   rather than silently doing nothing. No PTY needed — the shim/`run`
+   path never touches a tty.
 
 Run just the new layers:
 
 ```sh
-go test . -run 'Frame|Glyph|OSC|Animation|RenderLoop|AcquireTTYLock|Install|Uninstall' -v
-go test ./tests/... -run FakeAgent -v
+go test . -run 'Frame|Glyph|OSC|Animation|RenderLoop|AcquireTTYLock|Install|Uninstall|ShellRC' -v
+go test ./tests/... -run 'FakeAgent|Shim' -v
 ```
 
 ## Manual smoke matrix (native tabs — the one thing automation can't prove)

@@ -36,7 +36,7 @@ open-spinner install          # auto-detects Claude Code / Codex / OpenCode conf
 
 That's it — busy agents now animate their tab title. To uninstall: `open-spinner uninstall`.
 
-For an agent with no hook system at all, wrap it instead:
+`pi` and `jcode` don't need manual wrapping — `open-spinner install pi` (or `jcode`) installs a PATH shim that does this automatically. For any other agent with no hook system at all, wrap it manually instead:
 
 ```sh
 open-spinner run -- pi chat
@@ -79,8 +79,8 @@ Supported commands:
 - `clear [--id <id>] [--agent <name>]`
 - `list --format json`
 - `print --format plain|tmux|json`
-- `install [claude|codex|opencode...]` — with no arguments, auto-detects installed agents by config-dir presence (`~/.claude`, `~/.codex`, `~/.config/opencode`) and merges hook config for each. Safe to re-run; only ever touches entries it wrote itself.
-- `uninstall [claude|codex|opencode...]` — reverses `install`. With no arguments, tries all known agents (a no-op wherever nothing was installed).
+- `install [claude|codex|opencode|pi|jcode...]` — with no arguments, auto-detects installed agents: `claude`/`codex`/`opencode` by config-dir presence (`~/.claude`, `~/.codex`, `~/.config/opencode`), `pi`/`jcode` by PATH lookup. For `pi`/`jcode` (no hook system of their own), install writes a PATH shim under `~/.open-spinner/shims/` that wraps the real binary in `run`, plus a one-time PATH line appended to your shell rc file (`~/.zshrc`/`~/.bashrc`/`~/.profile`, chosen by `$SHELL`) — open a new shell or re-source your rc file for it to take effect. Safe to re-run; only ever touches entries it wrote itself.
+- `uninstall [claude|codex|opencode|pi|jcode...]` — reverses `install`. With no arguments, tries all known agents (a no-op wherever nothing was installed).
 - `run [--agent name] [--id id] -- <command> [args...]` — for agents with no hook system: marks the whole run `busy`, clears on exit. Coarse (whole process lifetime, not per-turn), but honest — no scraping involved.
 - `render --id <id> [--tty <path>] [--no-anim] [--restore <title>]` — the tab-title renderer itself. Normally spawned automatically by `set busy` or `run`; only call directly for debugging.
 - `version` or `--version`
@@ -156,6 +156,22 @@ AGENT_STATUS_DIR=$tmp go run . print --format plain
 AGENT_STATUS_DIR=$tmp go run . clear
 ```
 
+Manual smoke for the `pi`/`jcode` shim install:
+
+```sh
+tmp=$(mktemp -d)
+mkdir -p "$tmp/home" "$tmp/fakebin"
+printf '#!/bin/sh\necho "fake-pi ran with args: $@"\n' > "$tmp/fakebin/pi"
+chmod +x "$tmp/fakebin/pi"
+
+HOME="$tmp/home" PATH="$tmp/fakebin:$PATH" go run . install pi
+ls -l "$tmp/home/.open-spinner/shims/pi"      # exists, executable, managed-by marker
+cat "$tmp/home/.zshrc"                        # (or .bashrc/.profile) PATH block present once
+
+AGENT_STATUS_DIR="$tmp/status" HOME="$tmp/home" PATH="$tmp/fakebin:$PATH" \
+  "$tmp/home/.open-spinner/shims/pi" hello world   # prints "fake-pi ran with args: hello world"
+```
+
 ## Scope
 
 What's here:
@@ -163,10 +179,10 @@ What's here:
 - local JSON store — `set`, `clear`, `list`, `print` (plain/tmux/JSON), TTL-based stale state
 - native tab-title rendering via OSC 0, animated with a static fallback
 - bundled hook installers for Claude Code, Codex, and OpenCode
-- a `run` wrapper for agents without a hook system
+- a `run` wrapper for agents without a hook system, plus installable PATH shims for `pi`/`jcode`
 
 Deliberate limits, not oversights:
 
-- No auto-detection of arbitrary agent CLIs — hooks are bundled for the big three; anything else goes through `run` (whole-process-lifetime granularity) or needs its own adapter.
+- No auto-detection of *arbitrary* agent CLIs — hooks are bundled for Claude Code/Codex/OpenCode, and `pi`/`jcode` get an installable PATH shim around `run`; any other hookless agent still goes through `run` manually (whole-process-lifetime granularity) or needs its own adapter.
 - No terminal-output scraping, ever.
 - No animation under tmux — static/`print --format tmux` there instead.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -16,8 +17,14 @@ import (
 // create.
 const managedMarkerValue = "open-spinner"
 const managedFileMarker = "managed-by: open-spinner"
+const pathBlockStart = "# >>> open-spinner >>>"
+const pathBlockEnd = "# <<< open-spinner <<<"
 
-var knownAgents = []string{"claude", "codex", "opencode"}
+var knownAgents = []string{"claude", "codex", "opencode", "pi", "jcode"}
+
+// shimAgents are hookless agents (no lifecycle hook/plugin system) that get
+// installed via a PATH shim around the `run` wrapper instead of hook config.
+var shimAgents = []string{"pi", "jcode"}
 
 func installCmd(args []string, out io.Writer) error {
 	fs := newFlagSet("install")
@@ -108,8 +115,13 @@ func resolveAgentTargets(explicit []string, autodetectRequiresConfig bool) ([]st
 	if dirExists(filepath.Join(home, ".config", "opencode")) {
 		detected = append(detected, "opencode")
 	}
+	for _, agent := range shimAgents {
+		if _, err := exec.LookPath(agent); err == nil {
+			detected = append(detected, agent)
+		}
+	}
 	if len(detected) == 0 {
-		return nil, errors.New("no known agent config directories found (~/.claude, ~/.codex, ~/.config/opencode); pass agent names explicitly, e.g. open-spinner install claude")
+		return nil, errors.New("no known agent config directories or hookless agent binaries found (~/.claude, ~/.codex, ~/.config/opencode, or pi/jcode on PATH); pass agent names explicitly, e.g. open-spinner install claude")
 	}
 	return detected, nil
 }
@@ -122,6 +134,8 @@ func installAgent(agent, home, bin string) error {
 		return installCodex(home, bin)
 	case "opencode":
 		return installOpenCode(home, bin)
+	case "pi", "jcode":
+		return installShimAgent(agent, home, bin)
 	default:
 		return fmt.Errorf("unknown agent %q", agent)
 	}
@@ -135,6 +149,8 @@ func uninstallAgent(agent, home string) error {
 		return uninstallCodex(home)
 	case "opencode":
 		return uninstallOpenCode(home)
+	case "pi", "jcode":
+		return uninstallShimAgent(agent, home)
 	default:
 		return fmt.Errorf("unknown agent %q", agent)
 	}
@@ -302,9 +318,9 @@ func uninstallCodex(home string) error {
 
 func codexEventVerbs() map[string]string {
 	return map[string]string{
-		"UserPromptSubmit": "set busy",
-		"Notification":     "set attention",
-		"Stop":             "set idle",
+		"UserPromptSubmit":  "set busy",
+		"PermissionRequest": "set attention",
+		"Stop":              "set idle",
 	}
 }
 
@@ -380,25 +396,169 @@ function report(...args) {
   execFile(BIN, args, () => {});
 }
 
+// Pull a per-session id out of whatever shape the event carries it in.
+// Without this, every OpenCode session on the machine writes the same
+// "--agent opencode" status file and stomps on each other's state (a
+// finished session can get flipped back to busy by an unrelated one).
+// Falls back to "" (open-spinner then keys off the tty instead) if none
+// of these match a future OpenCode event shape.
+function sessionIdFrom(event) {
+  const props = event.properties || {};
+  return props.sessionID || props.sessionId || (props.info && props.info.id) || "";
+}
+
 export const OpenSpinnerPlugin = async () => {
   return {
     event: async ({ event }) => {
+      const id = sessionIdFrom(event);
+      const idArgs = id ? ["--id", id] : [];
       switch (event.type) {
         case "session.created":
         case "session.status":
-          report("set", "busy", "--agent", "opencode");
+          report("set", "busy", "--agent", "opencode", ...idArgs);
           break;
         case "permission.asked":
-          report("set", "attention", "--agent", "opencode");
+          report("set", "attention", "--agent", "opencode", ...idArgs);
           break;
         case "session.idle":
-          report("set", "idle", "--agent", "opencode");
+          report("set", "idle", "--agent", "opencode", ...idArgs);
           break;
       }
     },
   };
 };
 `, managedFileMarker, bin)
+}
+
+// --- Hookless agents (pi, jcode): PATH shim wrapping `run` ---
+
+func shimDir(home string) string {
+	return filepath.Join(home, ".open-spinner", "shims")
+}
+
+// installShimAgent writes a PATH shim for a hookless agent (pi, jcode) that
+// wraps the real binary in `open-spinner run`, then ensures the shim
+// directory is on PATH for future shells. Shared by both agents since the
+// only difference between them is the agent name.
+func installShimAgent(agent, home, bin string) error {
+	dir := shimDir(home)
+	path := filepath.Join(dir, agent)
+
+	if data, err := os.ReadFile(path); err == nil {
+		if !strings.Contains(string(data), managedFileMarker) {
+			return fmt.Errorf("%s already exists and isn't open-spinner-managed; remove it or rename it, then retry", path)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte(shimScriptSource(agent, bin)), 0o755); err != nil {
+		return err
+	}
+	return ensureShimDirOnPath(home)
+}
+
+func uninstallShimAgent(agent, home string) error {
+	path := filepath.Join(shimDir(home), agent)
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(string(data), managedFileMarker) {
+		return nil
+	}
+	// Deliberately does not touch the PATH rc block: a stale PATH entry
+	// pointing at an empty/missing shim dir is an inert no-op for every
+	// shell, and safely round-tripping edits to a user's rc file (which
+	// may have been hand-edited since) is real risk for no real benefit.
+	return os.Remove(path)
+}
+
+func shimScriptSource(agent, bin string) string {
+	return fmt.Sprintf(`#!/bin/sh
+# %s
+# Regenerate with: open-spinner install %s
+#
+# Finds the real %q binary on PATH at runtime (skipping this shim's own
+# directory, so it doesn't call itself once the shim dir is on PATH) and
+# hands it to open-spinner's "run" wrapper, which marks status busy for
+# the whole process lifetime. The real binary's path is intentionally
+# NOT baked in at install time, since that would go stale on upgrade or
+# reinstall of the real CLI.
+
+agent_name=%q
+shim_dir=$(cd "$(dirname "$0")" && pwd)
+
+real_bin=""
+old_ifs=$IFS
+IFS=:
+for dir in $PATH; do
+    [ -z "$dir" ] && continue
+    [ "$dir" = "$shim_dir" ] && continue
+    if [ -x "$dir/$agent_name" ]; then
+        real_bin="$dir/$agent_name"
+        break
+    fi
+done
+IFS=$old_ifs
+
+if [ -z "$real_bin" ]; then
+    echo "open-spinner: no real '$agent_name' binary found on PATH (only this shim at $shim_dir)" >&2
+    exit 127
+fi
+
+exec %q run --agent "$agent_name" -- "$real_bin" "$@"
+`, managedFileMarker, agent, agent, agent, bin)
+}
+
+// ensureShimDirOnPath appends an idempotent, marker-delimited PATH export
+// block to the user's shell rc file, chosen by $SHELL. Shared across both
+// pi and jcode installs; installing both writes the block exactly once.
+func ensureShimDirOnPath(home string) error {
+	rcPath := shellRCPath(home, os.Getenv("SHELL"))
+
+	data, err := os.ReadFile(rcPath)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if strings.Contains(string(data), pathBlockStart) {
+		return nil
+	}
+
+	f, err := os.OpenFile(rcPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if len(data) > 0 && !strings.HasSuffix(string(data), "\n") {
+		if _, err := f.WriteString("\n"); err != nil {
+			return err
+		}
+	}
+	_, err = f.WriteString(pathBlock(home))
+	return err
+}
+
+func shellRCPath(home, shell string) string {
+	switch {
+	case strings.Contains(shell, "zsh"):
+		return filepath.Join(home, ".zshrc")
+	case strings.Contains(shell, "bash"):
+		return filepath.Join(home, ".bashrc")
+	default:
+		return filepath.Join(home, ".profile")
+	}
+}
+
+func pathBlock(home string) string {
+	return fmt.Sprintf("%s\nexport PATH=\"%s:$PATH\"\n%s\n", pathBlockStart, shimDir(home), pathBlockEnd)
 }
 
 // --- shared JSON + filesystem helpers ---

@@ -141,7 +141,7 @@ func TestInstallCodexIsIdempotent(t *testing.T) {
 	}
 
 	root := readJSONFile(t, filepath.Join(home, ".codex", "hooks.json"))
-	for _, event := range []string{"UserPromptSubmit", "Notification", "Stop"} {
+	for _, event := range []string{"UserPromptSubmit", "PermissionRequest", "Stop"} {
 		arr, ok := root[event].([]interface{})
 		if !ok {
 			t.Fatalf("event %s missing after install", event)
@@ -210,6 +210,31 @@ func TestInstallOpenCodeIsIdempotent(t *testing.T) {
 	}
 }
 
+// Without a per-session id, every OpenCode session writes the same
+// "--agent opencode" status file and stomps on each other's state — the
+// same collision bug that made the native-tab spinner get stuck across
+// multiple Claude/Codex sessions. Guard that the generated plugin always
+// threads a session id through to each report(...) call.
+func TestInstallOpenCodePluginPassesSessionID(t *testing.T) {
+	home := t.TempDir()
+	if err := installOpenCode(home, "/bin/open-spinner"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".config", "opencode", "plugin", "open-spinner.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(data)
+	if !strings.Contains(src, "sessionIdFrom") {
+		t.Fatal("plugin should derive a session id from the event payload")
+	}
+	for _, call := range []string{`"busy", "--agent", "opencode", ...idArgs`, `"attention", "--agent", "opencode", ...idArgs`, `"idle", "--agent", "opencode", ...idArgs`} {
+		if !strings.Contains(src, call) {
+			t.Fatalf("expected report(...) call to thread idArgs through: %s", call)
+		}
+	}
+}
+
 func TestInstallOpenCodeRefusesToClobberUnmanagedFile(t *testing.T) {
 	home := t.TempDir()
 	dir := filepath.Join(home, ".config", "opencode", "plugin")
@@ -272,6 +297,143 @@ func TestUninstallOpenCodeLeavesUnmanagedFileAlone(t *testing.T) {
 	}
 }
 
+// --- Hookless agents (pi, jcode) ---
+
+func TestInstallShimAgentIsIdempotent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SHELL", "/bin/zsh")
+	path := filepath.Join(home, ".open-spinner", "shims", "pi")
+
+	if err := installShimAgent("pi", home, "/bin/open-spinner"); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := installShimAgent("pi", home, "/bin/open-spinner"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first) != string(second) {
+		t.Fatal("reinstall produced different content; expected deterministic idempotent output")
+	}
+	if !strings.Contains(string(first), managedFileMarker) {
+		t.Fatal("shim script missing managed marker")
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&0o111 == 0 {
+		t.Fatal("shim script is not executable")
+	}
+}
+
+func TestInstallShimAgentRefusesToClobberUnmanagedFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SHELL", "/bin/zsh")
+	dir := filepath.Join(home, ".open-spinner", "shims")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "pi")
+	const custom = "#!/bin/sh\necho my own pi wrapper\n"
+	if err := os.WriteFile(path, []byte(custom), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := installShimAgent("pi", home, "/bin/open-spinner"); err == nil {
+		t.Fatal("expected install to refuse overwriting an unmanaged shim file")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != custom {
+		t.Fatal("unmanaged shim file content was modified")
+	}
+}
+
+func TestUninstallShimAgentRemovesOnlyManagedFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SHELL", "/bin/zsh")
+	if err := installShimAgent("pi", home, "/bin/open-spinner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := uninstallShimAgent("pi", home); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, ".open-spinner", "shims", "pi")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("managed shim file should be removed after uninstall")
+	}
+}
+
+func TestUninstallShimAgentLeavesUnmanagedFileAlone(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".open-spinner", "shims")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "pi")
+	const custom = "#!/bin/sh\necho my own pi wrapper\n"
+	if err := os.WriteFile(path, []byte(custom), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := uninstallShimAgent("pi", home); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != custom {
+		t.Fatal("uninstall modified an unmanaged shim file")
+	}
+}
+
+func TestEnsureShimDirOnPathIsIdempotentAcrossBothAgents(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SHELL", "/bin/zsh")
+
+	if err := installShimAgent("pi", home, "/bin/open-spinner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := installShimAgent("jcode", home, "/bin/open-spinner"); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(home, ".zshrc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(data), pathBlockStart); got != 1 {
+		t.Fatalf("expected PATH block written exactly once across both installs, got %d", got)
+	}
+}
+
+func TestShellRCPathSelectsFileByShellEnv(t *testing.T) {
+	home := t.TempDir()
+	cases := map[string]string{
+		"/bin/zsh":      ".zshrc",
+		"/usr/bin/bash": ".bashrc",
+		"/usr/bin/fish": ".profile",
+		"":              ".profile",
+	}
+	for shell, want := range cases {
+		got := shellRCPath(home, shell)
+		if filepath.Base(got) != want {
+			t.Errorf("shellRCPath(%q) = %q, want basename %q", shell, got, want)
+		}
+	}
+}
+
 // --- top-level install/uninstall commands (autodetection) ---
 
 func TestInstallCmdAutodetectsFromConfigDirs(t *testing.T) {
@@ -297,9 +459,37 @@ func TestInstallCmdAutodetectsFromConfigDirs(t *testing.T) {
 	}
 }
 
+func TestInstallCmdAutodetectsHooklessAgentFromPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SHELL", "/bin/zsh")
+
+	fakeBinDir := t.TempDir()
+	fakePi := filepath.Join(fakeBinDir, "pi")
+	if err := os.WriteFile(fakePi, []byte("#!/bin/sh\necho fake-pi\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBinDir)
+
+	var out bytes.Buffer
+	if err := installCmd(nil, &out); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "pi") {
+		t.Fatalf("expected pi to be autodetected via PATH and installed, got %q", got)
+	}
+	if strings.Contains(got, "jcode") || strings.Contains(got, "claude") || strings.Contains(got, "codex") || strings.Contains(got, "opencode") {
+		t.Fatalf("only pi should have been detected, got %q", got)
+	}
+}
+
 func TestInstallCmdErrorsWhenNothingDetectedAndNoneSpecified(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// Empty PATH so pi/jcode autodetection can't accidentally find a real
+	// binary installed on the machine running this test.
+	t.Setenv("PATH", t.TempDir())
 	var out bytes.Buffer
 	if err := installCmd(nil, &out); err == nil {
 		t.Fatal("expected error when no known agent config dirs exist and no agents were named explicitly")

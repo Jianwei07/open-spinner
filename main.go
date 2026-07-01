@@ -355,12 +355,26 @@ func safeName(id string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// resolveID picks the status ID a `set`/`clear` invocation should use.
+// Priority: explicit --id, then env vars, then the hook's own stdin JSON
+// session_id (Claude Code and Codex both deliver one, but only via stdin —
+// never as an env var), then the resolved tty (already unique per tab),
+// and only then the bare agent name. Skipping any of the middle steps
+// silently collapses every session of the same agent onto one status
+// file, which is the exact bug this chain exists to prevent: one tab's
+// hook firing can flip a different, already-finished tab back to busy.
 func resolveID(explicit, fallbackAgent string) string {
 	if explicit != "" {
 		return explicit
 	}
 	if id := envID(); id != "" {
 		return id
+	}
+	if id := sessionIDFromStdin(); id != "" {
+		return id
+	}
+	if tty := resolveTTY(); tty != "" {
+		return tty
 	}
 	return fallbackAgent
 }
@@ -372,6 +386,29 @@ func envID() string {
 		}
 	}
 	return ""
+}
+
+// sessionIDFromStdin extracts session_id from a hook's stdin JSON payload.
+// It only ever reads stdin when stdin is provably not an interactive
+// terminal (a pipe, as every Claude Code / Codex hook invocation provides),
+// so it can never block a manual CLI call, a test, or `open-spinner run`
+// wrapping an interactive agent.
+func sessionIDFromStdin() string {
+	info, err := os.Stdin.Stat()
+	if err != nil || info.Mode()&os.ModeCharDevice != 0 {
+		return ""
+	}
+	data, err := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	var payload struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return ""
+	}
+	return payload.SessionID
 }
 
 // resolveTTY finds the terminal device this process should render status
