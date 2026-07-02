@@ -36,6 +36,14 @@ open-spinner install          # auto-detects installed agents and wires their ho
 
 That's it — busy agents now animate their tab title. To uninstall: `open-spinner uninstall`.
 
+If nothing appears, run:
+
+```sh
+open-spinner doctor
+```
+
+It checks hook/plugin/shim installs, missing binaries, tty resolution, stale status files, renderer locks, and common terminal config overrides such as WezTerm `format-tab-title`.
+
 `pi`, `jcode`, `zai`, and `mimo` don't need manual wrapping — `open-spinner install pi` (or `jcode`/`zai`/`mimo`) installs a PATH shim that does this automatically. For any other agent with no hook system at all, wrap it manually instead:
 
 ```sh
@@ -69,6 +77,7 @@ open-spinner list --format json
 open-spinner clear
 open-spinner install [agent...]
 open-spinner uninstall [agent...]
+open-spinner doctor
 open-spinner run -- <command> [args...]
 open-spinner render --id <id> [--tty <path>] [--no-anim]
 ```
@@ -81,6 +90,7 @@ Supported commands:
 - `print --format plain|tmux|json`
 - `install [claude|codex|opencode|qwen|cursor|pi|jcode|zai|mimo...]` — with no arguments, auto-detects installed agents: `claude`/`codex`/`opencode`/`qwen`/`cursor` by config-dir presence (`~/.claude`, `~/.codex`, `~/.config/opencode`, `~/.qwen`, `~/.cursor`), `pi`/`jcode`/`zai`/`mimo` by PATH lookup. For the PATH-lookup group (no hook system of their own — or none confirmed yet, see Scope), install writes a PATH shim under `~/.open-spinner/shims/` that wraps the real binary in `run`, plus a one-time PATH line appended to your shell rc file (`~/.zshrc`/`~/.bashrc`/`~/.profile`, chosen by `$SHELL`) — open a new shell or re-source your rc file for it to take effect. Safe to re-run; only ever touches entries it wrote itself.
 - `uninstall [claude|codex|opencode|qwen|cursor|pi|jcode|zai|mimo...]` — reverses `install`. With no arguments, tries all known agents (a no-op wherever nothing was installed).
+- `doctor` (or `--doctor`) — read-only diagnostics for install wiring, tty resolution, status files, renderer locks, and terminal tab-title overrides.
 - `run [--agent name] [--id id] -- <command> [args...]` — for agents with no hook system: marks the whole run `busy`, clears on exit. Coarse (whole process lifetime, not per-turn), but honest — no scraping involved.
 - `render --id <id> [--tty <path>] [--no-anim] [--restore <title>]` — the tab-title renderer itself. Normally spawned automatically by `set busy` or `run`; only call directly for debugging.
 - `version` or `--version`
@@ -95,6 +105,7 @@ Future install channels can add GitHub release binaries, Homebrew, and Scoop aft
 - **Self-terminating, not a daemon.** It's lazily spawned on the first `busy`, and exits on its own: after the idle-grace window, immediately on an explicit `clear`, or the moment a tty write fails (tab closed). No orphan processes to clean up.
 - **Degrades to static automatically** under `$TMUX` (the outer tab isn't reachable from a tmux pane the way `print --format tmux` is), with `--no-anim`, or with `OPEN_SPINNER_ANIM=0` — the same poll loop still runs (it needs to notice `idle`/`clear` regardless), it just writes the static glyph once and skips re-writing on every tick instead of cycling spinner frames.
 - Ghostty only supports plain tab-title text (its maintainers have declined a richer badge feature); the glyph still shows, just without iTerm2-style badge styling.
+- Custom terminal tab formatters can override OSC titles. In WezTerm, a `format-tab-title` handler must preserve the pane title if you want open-spinner's native title to be visible; `open-spinner doctor` warns when it detects this setup.
 
 ## tmux Integration
 

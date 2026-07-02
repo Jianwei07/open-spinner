@@ -40,13 +40,15 @@ func main() {
 
 func run(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: open-spinner <set|clear|list|print|version>")
+		return errors.New("usage: open-spinner <set|clear|list|print|doctor|version>")
 	}
 
 	switch args[0] {
 	case "--version", "version":
 		fmt.Fprintln(out, version)
 		return nil
+	case "--doctor", "doctor":
+		return doctorCmd(args[1:], out)
 	case "set":
 		return setCmd(args[1:])
 	case "clear":
@@ -426,40 +428,52 @@ func sessionIDFromStdin() string {
 // valid, documented outcome (e.g. non-interactive shells, some CI runners).
 func resolveTTY() string {
 	for _, key := range []string{"OPEN_SPINNER_TTY", "AGENT_STATUS_TTY", "TTY", "SSH_TTY"} {
-		if value := os.Getenv(key); value != "" {
-			return value
+		if tty := concreteTTY(os.Getenv(key)); tty != "" {
+			return tty
 		}
 	}
 	if name, err := os.Readlink("/proc/self/fd/0"); err == nil && strings.HasPrefix(name, "/dev/") {
-		return name
+		if tty := concreteTTY(name); tty != "" {
+			return tty
+		}
 	}
 	return ttynameFromControllingTerminal()
 }
 
-// ttynameFromControllingTerminal resolves the real device path of this
-// process's controlling terminal on platforms with no /proc (macOS, BSD).
-// A hook's fd 0 is a JSON pipe, not the terminal, so reading fd 0 (as the
-// /proc/self/fd/0 fallback above does) is the wrong target there anyway
-// — /dev/tty always refers to the controlling terminal regardless of what
-// fd 0/1/2 are redirected to. That special file has no readable path of
-// its own, so tty(1) (present on every POSIX system, unlike a portable
-// ttyname(3) binding in the Go standard library) is asked to resolve it.
-func ttynameFromControllingTerminal() string {
-	f, err := os.OpenFile("/dev/tty", os.O_RDONLY, 0)
-	if err != nil {
+func concreteTTY(name string) string {
+	// /dev/tty is a process-local alias; detached renderers need the real pty path.
+	if name == "" || name == "/dev/tty" {
 		return ""
 	}
-	defer f.Close()
+	return name
+}
 
-	cmd := exec.Command("tty")
-	cmd.Stdin = f
+// ttynameFromControllingTerminal resolves the real device path of this
+// process's controlling terminal on platforms with no /proc (macOS, BSD).
+// A hook's fd 0 is a JSON pipe, not the terminal, so ps(1) is used instead
+// of tty(1), which only reports the device attached to stdin.
+func ttynameFromControllingTerminal() string {
+	cmd := exec.Command("ps", "-o", "tty=", "-p", fmt.Sprint(os.Getpid()))
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}
+	return ttyPathFromPSOutput(out)
+}
+
+func ttyPathFromPSOutput(out []byte) string {
 	name := strings.TrimSpace(string(out))
+	if name == "" || name == "?" || name == "??" {
+		return ""
+	}
 	if strings.HasPrefix(name, "/dev/") {
-		return name
+		return concreteTTY(name)
+	}
+	if !strings.Contains(name, "/") && !strings.HasPrefix(name, "tty") {
+		return ""
+	}
+	if tty := concreteTTY("/dev/" + name); tty != "" {
+		return tty
 	}
 	return ""
 }

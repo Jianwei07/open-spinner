@@ -130,6 +130,30 @@ func TestResolveIDPriorityOrder(t *testing.T) {
 	})
 }
 
+func TestResolveTTYSkipsDevTTYAlias(t *testing.T) {
+	t.Setenv("OPEN_SPINNER_TTY", "/dev/tty")
+	t.Setenv("AGENT_STATUS_TTY", "/dev/ttys123")
+
+	if got := resolveTTY(); got != "/dev/ttys123" {
+		t.Fatalf("resolveTTY() = %q, want concrete tty fallback", got)
+	}
+}
+
+func TestTTYPathFromPSOutput(t *testing.T) {
+	cases := map[string]string{
+		"ttys003\n":      "/dev/ttys003",
+		"pts/2\n":        "/dev/pts/2",
+		"/dev/ttys004\n": "/dev/ttys004",
+		"/dev/tty\n":     "",
+		"??\n":           "",
+	}
+	for input, want := range cases {
+		if got := ttyPathFromPSOutput([]byte(input)); got != want {
+			t.Fatalf("ttyPathFromPSOutput(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 // TestSetBusyIsolatesConcurrentSessionsOfSameAgent is the regression test
 // for the actual reported bug: the spinner never stopped because every
 // hook invocation for the same --agent collapsed onto one shared status
