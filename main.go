@@ -40,13 +40,15 @@ func main() {
 
 func run(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: open-spinner <set|clear|list|print|version>")
+		return errors.New("usage: open-spinner <set|clear|list|print|doctor|version>")
 	}
 
 	switch args[0] {
 	case "--version", "version":
 		fmt.Fprintln(out, version)
 		return nil
+	case "--doctor", "doctor":
+		return doctorCmd(args[1:], out)
 	case "set":
 		return setCmd(args[1:])
 	case "clear":
